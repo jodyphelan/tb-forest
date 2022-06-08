@@ -11,6 +11,25 @@ import pathogenprofiler as pp
 import os
 import pickle
 
+def czb(t):
+    sys.stderr.write("Collapsing zero length branches\n")
+    change_made = True
+    while change_made:
+        change_made = False
+        for n in t.traverse():
+            if n.is_root():
+                continue
+            if n.dist==0:
+                p = n.get_ancestors()[0]
+                for c in list(n.children):
+                    p.add_child(c.detach())
+                if n.is_leaf() and "SRR" not in n.name and "ERR" not in n.name:
+                    n.detach()
+                    change_made = True
+                    break
+        
+    return t
+
 
 def parse_mutations(muts):
     results = set()
@@ -45,5 +64,6 @@ def nexus2ete3(filename):
     return t
 
 
-t = nexus2ete3(sys.argv[1])
-pickle.dump(t,open(sys.argv[2],"wb"))
+t = czb(nexus2ete3(sys.argv[1]))
+pickle.dump(t,open(sys.argv[2]+".pkl","wb"))
+t.write(format=1,outfile=sys.argv[2]+".newick")

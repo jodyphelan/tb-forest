@@ -1,11 +1,10 @@
+from dataclasses import replace
 from Bio import Phylo
 import sys
 import ete3
 import os
 from uuid import uuid4
-from collections import namedtuple
 from copy import copy
-import random
 import pathogenprofiler as pp
 import os
 import pickle
@@ -67,20 +66,21 @@ def compare_sample_to_branch(sample_mutations,branch_mutations):
 
 
 
-def local_phylo_reconstruct(samples,ref,snippy_dir,outgroup,working_dir="/tmp"):
+def local_phylo_reconstruct(samples,ref,snippy_dir,outgroup,exclude_bed,working_dir="/tmp"):
     current_dir = os.getcwd()
     tmpdir = f"{working_dir}/{str(uuid4())}"
     os.mkdir(tmpdir)
     os.chdir(tmpdir)
     print(tmpdir)
     snippy_dirs = " ".join([f"{snippy_dir}/{s}" for s in samples])
-    pp.run_cmd(f"snippy-core -r {ref} {snippy_dirs}")
+    pp.run_cmd(f"snippy-core --mask {exclude_bed} -r {ref} {snippy_dirs}")
     pp.run_cmd(f"fasta_remove_seq.py --fasta core.full.aln --seqs Reference > core.noref.aln")
     pp.run_cmd(f"iqtree -s core.noref.aln -m GTR+F+I -czb")
     pp.run_cmd(f"tree_root_on_outgroup.py  --tree core.noref.aln.treefile --outfile core.noref.aln.rooted.treefile --outgroup {outgroup}")
     pp.run_cmd(f"treetime ancestral --aln core.vcf --vcf-reference {ref} --tree core.noref.aln.treefile  --outdir ancestral")
     t = nexus2ete3("ancestral/annotated_tree{}.nexus")
     os.chdir(current_dir)
+    pp.run_cmd(f"rm -rf {tmpdir}")
     return t
     
     
@@ -89,10 +89,48 @@ def replace_node(phy,samples_to_replace,replacement_node):
         node_to_replace = phy & samples_to_replace[0]
     else:
         node_to_replace = phy.get_common_ancestor(samples_to_replace)
+    pp.warninglog("*"*40)
+    pp.debug("Replacing:")
+    print(node_to_replace)
+    pp.debug("With:")
+    print(replacement_node)
+    pp.warninglog("*"*40)
     node_parent = node_to_replace.get_ancestors()[0]
     node_to_replace.detach()
     node_parent.add_child(replacement_node)
 
+def replace_node_children(phy,samples_to_replace,replacement_node):
+    if len(samples_to_replace)==1:
+        node_to_replace = phy & samples_to_replace[0]
+    else:
+        node_to_replace = phy.get_common_ancestor(samples_to_replace)
+    
+    pp.warninglog("*"*40)
+    pp.debug("Replacing:")
+    print(node_to_replace)
+    pp.debug("With:")
+    print(replacement_node)
+    pp.warninglog("*"*40)
+    node_to_replace.write(format=1,outfile="test.newick")
+    for n in list(node_to_replace.children):
+        pp.debug("Detaching:")
+        print(n)
+        n.detach()
+    
+    pp.debug("Node now looks like this:")
+    print(node_to_replace)
+    for n in replacement_node.children:
+        pp.debug("Attaching:")
+        print(n)
+        node_to_replace.add_child(n)
+    pp.debug("Node now looks like this:")
+    print(node_to_replace)
+
+def is_monophyletic(t,leaves):
+    if set(t.get_common_ancestor(leaves).get_leaf_names())==set(leaves):
+        return True
+    else:
+        return False
 def czb(t):
     sys.stderr.write("Collapsing zero length branches\n")
     change_made = True
@@ -115,11 +153,19 @@ def czb(t):
 def flatten(l):
     return [item for sublist in l for item in sublist]
 
+def print_marked_branch(t,branch_name):
+    for n in t.traverse():
+        if n.is_leaf():
+            n.add_features(tmp=n.name)
+
+    (t & branch_name).add_features(tmp="******")
+
+    print(t.get_ascii(attributes=["tmp"],show_internal=True))
 
 def main(args):
     args.snippy_dir = os.path.abspath(args.snippy_dir)
     t = pickle.load(open(args.master_tree,"rb"))
-    print(t)
+
     from collections import Counter
     if Counter(t.get_leaf_names())["ERR4553785"]>1:
         quit("ERR4553785 is not unique")
@@ -146,7 +192,9 @@ def main(args):
         
         results.append((n.name,compare_sample_to_branch(sample_mutations,n.mutations),len(n.get_ancestors())))
 
+    print(results)
     filtered_results = [r for r in results if r[1]>0.5]
+    print(filtered_results)
     nodeA = t & filtered_results[-1][0]
     if nodeA.is_leaf():
         nodeA = nodeA.get_ancestors()[0]
@@ -154,18 +202,16 @@ def main(args):
     nodeD = nodeA.get_ancestors()[0]
     outclade_nodes = [n for n in nodeA.get_ancestors()[0].children if n.name!=nodeA.name]
     outclade = flatten([n.get_leaf_names()[:3] for n in outclade_nodes])
-    
+    pp.debug("Outclade: %s" % str(outclade))
 
-    number_of_leaves = len(nodeA.get_leaves())
-    print(filtered_results)
-    print(nodeA.get_ancestors()[0].get_ascii(attributes=["name","dist"],show_internal=True))
-    if number_of_leaves>20:
-        children_nodes = nodeA.children
-        children_node_reps = [n.get_leaf_names()[:3] for n in children_nodes]
-        representative_children = flatten(children_node_reps)
-        tmp_samples =  set(representative_children + outclade + [args.new_sample, args.outgroup])
-    else:
-        tmp_samples = set(nodeA.get_leaf_names() + outclade + [args.new_sample, args.outgroup])
+
+
+    print_marked_branch(nodeA.get_ancestors()[0],nodeA.name)
+
+    children_nodes = nodeA.children
+    children_node_reps = [n.get_leaf_names()[:3] for n in children_nodes]
+    representative_children = flatten(children_node_reps)
+    tmp_samples =  set(representative_children + outclade + [args.new_sample, args.outgroup])
     
 
 
@@ -175,7 +221,8 @@ def main(args):
         ref = args.ref,
         snippy_dir = args.snippy_dir,
         outgroup = args.outgroup,
-        working_dir=args.working_dir
+        working_dir=args.working_dir,
+        exclude_bed=args.exclude_bed
     )
 
     for n in x.traverse():
@@ -184,23 +231,32 @@ def main(args):
         if n.is_root(): continue
         n.name = str(uuid4())
 
-
-    if number_of_leaves>20:
-        for i in range(len(children_nodes)):
+    x = czb(x)
+    pp.debug("Outclade samples: %s" % outclade)
+    pp.debug("Representative children samples: %s" % representative_children)
+    print(x)
+    print(children_node_reps)
+    for i in range(len(children_nodes)):
+        if len(children_node_reps[i])==1:
+            children_nodes.pop(0)
+        elif is_monophyletic(x,children_node_reps[i]):
             replace_node(x,children_node_reps[i],children_nodes[0].detach())
+        else:
+            
+            if len(t.get_common_ancestor(children_node_reps[i]))==len(children_node_reps[i]):
+                pp.warninglog("Clade has been broken up but is complete... skipping")
+            else:
+                pp.errlog("Don't know what do do here",True)
+            children_nodes.pop(0)
+            
 
-        reconstructed_node = x.get_common_ancestor(representative_children + [args.new_sample])
-        nodeA.detach()
-        nodeD.add_child(reconstructed_node)
-    else:
-        reconstructed_node = x.get_common_ancestor(nodeA.get_leaf_names() + outclade + [args.new_sample])
-        print(reconstructed_node)
-        if args.outgroup in reconstructed_node.get_leaf_names():
-            (reconstructed_node & args.outgroup).detach()
-        tmp_samples = set(nodeA.get_leaf_names() + outclade)
-        replace_node(t,tmp_samples,reconstructed_node)
-    print(reconstructed_node.get_ascii(attributes=["name","dist"],show_internal=True))
-    print(reconstructed_node.get_leaf_names())
+    reconstructed_node = x.get_common_ancestor(representative_children + [args.new_sample])
+    nodeA.detach()
+    nodeD.add_child(reconstructed_node)
+
+
+
+    print(t)
     if args.outgroup in reconstructed_node.get_leaf_names():
         print("Outroup is in the reconstructed tree")
         quit()
@@ -230,6 +286,7 @@ parser.add_argument('--snippy-dir',type=str,help='Directory containing snippy ou
 parser.add_argument('--outgroup',type=str,help='Outgroup to use for rooting')
 parser.add_argument('--working-dir',type=str,help='Working directory',default="/tmp")
 parser.add_argument('--ref',type=str,help='Reference genome',default="/home/jody/refgenome/MTB-h37rv_asm19595v2-eg18.fa")
+parser.add_argument('--exclude-bed',required = True)
 parser.set_defaults(func=main)
 args = parser.parse_args()
 args.func(args)
