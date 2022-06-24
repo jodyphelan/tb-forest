@@ -151,6 +151,15 @@ def czb(t,cut=0):
         
     return t
 
+def get_close_samples(t,sample_name,cutoff=10):
+    samples = []
+    for s in t.get_leaf_names():
+        if s==sample_name: 
+            continue
+        if t.get_distance(sample_name,s)<=cutoff:
+            samples.append(s)
+    return samples
+    
 def flatten(l):
     return [item for sublist in l for item in sublist]
 
