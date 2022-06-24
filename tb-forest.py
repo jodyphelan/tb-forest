@@ -66,7 +66,7 @@ def compare_sample_to_branch(sample_mutations,branch_mutations):
 
 
 
-def local_phylo_reconstruct(samples,ref,snippy_dir,outgroup,exclude_bed,working_dir="/tmp"):
+def local_phylo_reconstruct(samples,ref,snippy_dir,outgroup,exclude_bed,working_dir="/tmp",clean=True):
     current_dir = os.getcwd()
     tmpdir = f"{working_dir}/{str(uuid4())}"
     os.mkdir(tmpdir)
@@ -77,10 +77,11 @@ def local_phylo_reconstruct(samples,ref,snippy_dir,outgroup,exclude_bed,working_
     pp.run_cmd(f"fasta_remove_seq.py --fasta core.full.aln --seqs Reference > core.noref.aln")
     pp.run_cmd(f"iqtree -s core.noref.aln -m GTR+F+I -czb")
     pp.run_cmd(f"tree_root_on_outgroup.py  --tree core.noref.aln.treefile --outfile core.noref.aln.rooted.treefile --outgroup {outgroup}")
-    pp.run_cmd(f"treetime ancestral --aln core.vcf --vcf-reference {ref} --tree core.noref.aln.treefile  --outdir ancestral")
+    pp.run_cmd(f"treetime ancestral --aln core.vcf --vcf-reference {ref} --tree core.noref.aln.rooted.treefile  --outdir ancestral")
     t = nexus2ete3("ancestral/annotated_tree{}.nexus")
     os.chdir(current_dir)
-    pp.run_cmd(f"rm -rf {tmpdir}")
+    if clean:
+        pp.run_cmd(f"rm -rf {tmpdir}")
     return t
     
     
@@ -131,7 +132,7 @@ def is_monophyletic(t,leaves):
         return True
     else:
         return False
-def czb(t):
+def czb(t,cut=0):
     sys.stderr.write("Collapsing zero length branches\n")
     change_made = True
     while change_made:
@@ -139,11 +140,11 @@ def czb(t):
         for n in t.traverse():
             if n.is_root():
                 continue
-            if n.dist==0:
+            if n.dist<=cut:
                 p = n.get_ancestors()[0]
                 for c in list(n.children):
                     p.add_child(c.detach())
-                if n.is_leaf() and "SRR" not in n.name and "ERR" not in n.name:
+                if n.is_leaf() and "DRR" not in n.name and "SRR" not in n.name and "ERR" not in n.name:
                     n.detach()
                     change_made = True
                     break
@@ -169,7 +170,7 @@ def main(args):
     from collections import Counter
     if Counter(t.get_leaf_names())["ERR4553785"]>1:
         quit("ERR4553785 is not unique")
-    t = czb(t)
+    t = czb(t,cut=1)
     # new_sample = "SRR8651557"
     input_vcf = f"{args.snippy_dir}/{args.new_sample}/snps.vcf"
     # outgroup = "ERR4553785"
@@ -196,50 +197,64 @@ def main(args):
     filtered_results = [r for r in results if r[1]>0.5]
     print(filtered_results)
     nodeA = t & filtered_results[-1][0]
+    print(nodeA.mutations)
     if nodeA.is_leaf():
         nodeA = nodeA.get_ancestors()[0]
 
-    nodeD = nodeA.get_ancestors()[0]
-    outclade_nodes = [n for n in nodeA.get_ancestors()[0].children if n.name!=nodeA.name]
-    outclade = flatten([n.get_leaf_names()[:3] for n in outclade_nodes])
-    pp.debug("Outclade: %s" % str(outclade))
+    # nodeA = nodeA.get_ancestors()[0]
+    while True:
+        nodeD = nodeA.get_ancestors()[0]
+        outclade_nodes = [n for n in nodeD.children if n.name!=nodeA.name]
+        outclade = flatten([n.get_leaf_names()[:3] for n in outclade_nodes])
+        pp.debug("Outclade: %s" % str(outclade))
 
 
 
-    print_marked_branch(nodeA.get_ancestors()[0],nodeA.name)
-
-    children_nodes = nodeA.children
-    children_node_reps = [n.get_leaf_names()[:3] for n in children_nodes]
-    representative_children = flatten(children_node_reps)
-    tmp_samples =  set(representative_children + outclade + [args.new_sample, args.outgroup])
-    
-
+        print_marked_branch(nodeA.get_ancestors()[0],nodeA.name)
+        children_nodes = nodeA.children
+        children_node_reps = [set(n.get_leaf_names()[:2] + n.get_leaf_names()[-2:]) for n in children_nodes]
+        representative_children = flatten(children_node_reps)
+        tmp_samples =  set(representative_children + outclade + [args.new_sample, args.outgroup])
+        
 
 
-    x = local_phylo_reconstruct(
-        samples = tmp_samples,
-        ref = args.ref,
-        snippy_dir = args.snippy_dir,
-        outgroup = args.outgroup,
-        working_dir=args.working_dir,
-        exclude_bed=args.exclude_bed
-    )
 
+        x = local_phylo_reconstruct(
+            samples = tmp_samples,
+            ref = args.ref,
+            snippy_dir = args.snippy_dir,
+            outgroup = args.outgroup,
+            working_dir=args.working_dir,
+            exclude_bed=args.exclude_bed,
+            clean=args.no_clean
+        )
+        x = czb(x,cut=1)
+        if not is_monophyletic(x,representative_children + [args.new_sample]):
+            nodeA = nodeA.get_ancestors()[0]
+            pp.warninglog("Not monophyletic, going back to a higher node")
+        else:
+            break
+    print("*"*40)
+    print(x.get_ascii(attributes=["name","dist"],show_internal=True))
+    print("*"*40)
     for n in x.traverse():
 
         if n.is_leaf(): continue
         if n.is_root(): continue
         n.name = str(uuid4())
 
-    x = czb(x)
+    
     pp.debug("Outclade samples: %s" % outclade)
     pp.debug("Representative children samples: %s" % representative_children)
-    print(x)
+    
     print(children_node_reps)
     for i in range(len(children_nodes)):
+        print(children_node_reps[i])
         if len(children_node_reps[i])==1:
+            pp.warninglog("Node only has one sample... doing nothing")
             children_nodes.pop(0)
         elif is_monophyletic(x,children_node_reps[i]):
+            pp.infolog("Node is monophyletic and will be replaced")
             replace_node(x,children_node_reps[i],children_nodes[0].detach())
         else:
             
@@ -287,6 +302,7 @@ parser.add_argument('--outgroup',type=str,help='Outgroup to use for rooting')
 parser.add_argument('--working-dir',type=str,help='Working directory',default="/tmp")
 parser.add_argument('--ref',type=str,help='Reference genome',default="/home/jody/refgenome/MTB-h37rv_asm19595v2-eg18.fa")
 parser.add_argument('--exclude-bed',required = True)
+parser.add_argument('--no-clean',action="store_false",help='Do not clean up working directory')
 parser.set_defaults(func=main)
 args = parser.parse_args()
 args.func(args)

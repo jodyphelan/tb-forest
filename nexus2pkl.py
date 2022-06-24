@@ -10,8 +10,9 @@ import random
 import pathogenprofiler as pp
 import os
 import pickle
+from tqdm import tqdm
 
-def czb(t):
+def czb(t,cut=0):
     sys.stderr.write("Collapsing zero length branches\n")
     change_made = True
     while change_made:
@@ -19,11 +20,11 @@ def czb(t):
         for n in t.traverse():
             if n.is_root():
                 continue
-            if n.dist==0:
+            if n.dist<=cut:
                 p = n.get_ancestors()[0]
                 for c in list(n.children):
                     p.add_child(c.detach())
-                if n.is_leaf() and "SRR" not in n.name and "ERR" not in n.name:
+                if n.is_leaf() and "DRR" not in n.name and "SRR" not in n.name and "ERR" not in n.name:
                     n.detach()
                     change_made = True
                     break
@@ -64,6 +65,6 @@ def nexus2ete3(filename):
     return t
 
 
-t = czb(nexus2ete3(sys.argv[1]))
+t = czb(nexus2ete3(sys.argv[1]),cut=1)
 pickle.dump(t,open(sys.argv[2]+".pkl","wb"))
 t.write(format=1,outfile=sys.argv[2]+".newick")
