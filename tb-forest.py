@@ -1,4 +1,3 @@
-from dataclasses import replace
 from Bio import Phylo
 import sys
 import ete3
@@ -9,7 +8,7 @@ import pathogenprofiler as pp
 import os
 import pickle
 import argparse
-
+from tqdm import tqdm
 
 
 def nexus2ete3(filename):
@@ -47,17 +46,28 @@ def load_vcf_mutations(vcf,ref):
     fa = pp.fasta(ref).fa_dict['Chromosome']
     positions = set()
     sample_mutations = set()
-    for l in open(vcf):
+    for l in tqdm(pp.cmd_out(f"bcftools norm -a {vcf}")):
         if "#" in l:continue
         row = l.strip().split()
         sample_mutations.add((int(row[1]),row[4]))
         positions.add(int(row[1]))
-    for i in range(len(fa)):
+    for i in tqdm(range(len(fa))):
         if i+1 in positions:
             continue
         sample_mutations.add((i+1,fa[i:i+1]))
     return sample_mutations
 
+def load_mixed_positions(fasta):
+    x  = set()
+    fa = pp.fasta(fasta).fa_dict['Chromosome']
+    positions = set()
+    for i in tqdm(range(len(fa))):
+        x.add(fa[i])
+        if fa[i]=="N":
+            positions.add(i+1)
+    print(len(x))
+    return positions
+    
 def compare_sample_to_branch(sample_mutations,branch_mutations):
     br_common = len(branch_mutations.intersection(sample_mutations))
     br_uniq = len(branch_mutations.difference(sample_mutations))
@@ -66,8 +76,13 @@ def compare_sample_to_branch(sample_mutations,branch_mutations):
 
 
 
-def local_phylo_reconstruct(samples,ref,snippy_dir,outgroup,exclude_bed,working_dir="/tmp",clean=True):
+def local_phylo_reconstruct(samples,ref,snippy_dir,outgroup,exclude_bed,working_dir="/tmp",clean=True,id=None):
     current_dir = os.getcwd()
+    if id:
+        os.chdir(f"{working_dir}/{id}")
+        t = nexus2ete3("ancestral/annotated_tree{}.nexus")
+        os.chdir(current_dir)
+        return t
     tmpdir = f"{working_dir}/{str(uuid4())}"
     os.mkdir(tmpdir)
     os.chdir(tmpdir)
@@ -135,6 +150,7 @@ def is_monophyletic(t,leaves):
 def czb(t,cut=0):
     sys.stderr.write("Collapsing zero length branches\n")
     change_made = True
+    leaves = set(t.get_leaf_names())
     while change_made:
         change_made = False
         for n in t.traverse():
@@ -144,7 +160,7 @@ def czb(t,cut=0):
                 p = n.get_ancestors()[0]
                 for c in list(n.children):
                     p.add_child(c.detach())
-                if n.is_leaf() and "DRR" not in n.name and "SRR" not in n.name and "ERR" not in n.name:
+                if n.is_leaf() and n.name not in leaves:
                     n.detach()
                     change_made = True
                     break
@@ -156,8 +172,9 @@ def get_close_samples(t,sample_name,cutoff=10):
     for s in t.get_leaf_names():
         if s==sample_name: 
             continue
-        if t.get_distance(sample_name,s)<=cutoff:
-            samples.append(s)
+        d = t.get_distance(sample_name,s)
+        if d<=cutoff:
+            samples.append((s,d))
     return samples
     
 def flatten(l):
@@ -172,19 +189,26 @@ def print_marked_branch(t,branch_name):
 
     print(t.get_ascii(attributes=["tmp"],show_internal=True))
 
-def main(args):
-    args.snippy_dir = os.path.abspath(args.snippy_dir)
+def main_cut(args):
     t = pickle.load(open(args.master_tree,"rb"))
+    samples = get_close_samples(t,args.sample,args.cutoff)
+    print(samples)
 
-    from collections import Counter
-    if Counter(t.get_leaf_names())["ERR4553785"]>1:
-        quit("ERR4553785 is not unique")
+
+def main_add(args):
+    args.snippy_dir = os.path.abspath(args.snippy_dir)
+    print("Loading tree")
+    t = pickle.load(open(args.master_tree,"rb"))
+    input_tree_size = len(t.get_leaf_names())
+    print("Loaded tree")
     t = czb(t,cut=1)
+    print("finished")
     # new_sample = "SRR8651557"
     input_vcf = f"{args.snippy_dir}/{args.new_sample}/snps.vcf"
+    input_consensus = f"{args.snippy_dir}/{args.new_sample}/snps.aligned.fa"
     # outgroup = "ERR4553785"
     sample_mutations = load_vcf_mutations(input_vcf,args.ref)
-
+    mixed_positions = load_mixed_positions(input_consensus)
     def dont_go_further(node):
         if node.mutations==None: 
             return False
@@ -194,7 +218,7 @@ def main(args):
             return False
 
     results = []
-    for n in t.traverse(is_leaf_fn=dont_go_further):
+    for n in tqdm(t.traverse(is_leaf_fn=dont_go_further)):
         if n.is_root():
             continue
         if n.mutations==None:
@@ -210,6 +234,20 @@ def main(args):
     if nodeA.is_leaf():
         nodeA = nodeA.get_ancestors()[0]
 
+    #### check for mixed infection
+    for n in nodeA.traverse():
+        if n.is_leaf():
+            continue
+        # print(mixed_positions)
+        positions = set([x[0] for x in n.mutations])
+        # print(positions)
+        if len(positions.intersection(mixed_positions))/len(positions)>0.5:
+            print("Mixed infection detected")
+            pickle.dump(t,open(args.out+".pkl","wb"))
+            t.write(format=1,outfile=args.out+".newick")
+            quit()
+
+    
     # nodeA = nodeA.get_ancestors()[0]
     while True:
         nodeD = nodeA.get_ancestors()[0]
@@ -219,7 +257,7 @@ def main(args):
 
 
 
-        print_marked_branch(nodeA.get_ancestors()[0],nodeA.name)
+        # print_marked_branch(nodeA.get_ancestors()[0],nodeA.name)
         children_nodes = nodeA.children
         children_node_reps = [set(n.get_leaf_names()[:2] + n.get_leaf_names()[-2:]) for n in children_nodes]
         representative_children = flatten(children_node_reps)
@@ -266,14 +304,26 @@ def main(args):
             pp.infolog("Node is monophyletic and will be replaced")
             replace_node(x,children_node_reps[i],children_nodes[0].detach())
         else:
-            
             if len(t.get_common_ancestor(children_node_reps[i]))==len(children_node_reps[i]):
                 pp.warninglog("Clade has been broken up but is complete... skipping")
+                children_nodes.pop(0)
             else:
-                pp.errlog("Don't know what do do here",True)
-            children_nodes.pop(0)
+                tmpnode = t.get_common_ancestor(children_node_reps[i]).detach()
+                tmpnode2 = (x & args.new_sample).get_ancestors()[0].copy("deepcopy")
+                samps_to_replace = list(set(tmpnode2.get_leaf_names()) - set([args.new_sample]))
+                replace_node(tmpnode,samps_to_replace,tmpnode2)
+                print(tmpnode)
+                replace_node(x,children_node_reps[i],tmpnode)
+            # pp.warninglog(t.get_common_ancestor(children_node_reps[i]))
+            # pp.warninglog(len(children_node_reps[i]))
+            # if len(t.get_common_ancestor(children_node_reps[i]))==len(children_node_reps[i]):
+            #     pp.warninglog("Clade has been broken up but is complete... skipping")
+            # else:
+            #     pp.errlog("Don't know what do do here",True)
+            # children_nodes.pop(0)
             
-
+    print(x)
+    print(representative_children)
     reconstructed_node = x.get_common_ancestor(representative_children + [args.new_sample])
     nodeA.detach()
     nodeD.add_child(reconstructed_node)
@@ -295,23 +345,68 @@ def main(args):
                 n.mutations.remove(m)
         n.dist = len(n.mutations)
 
-    
+    if len(t.get_leaf_names()) != input_tree_size + 1:
+        pp.errlog("Lost some samples",True)
     
     pickle.dump(t,open(args.out+".pkl","wb"))
     t.write(format=1,outfile=args.out+".newick")
     
+    print(get_close_samples(t,args.new_sample))
 
 
-parser = argparse.ArgumentParser(description='tbprofiler script',formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--master-tree',type=str,help='Pickle file containing the master tree',required=True)
-parser.add_argument('--new-sample',type=str,help='New sample to add to the tree',required=True)
-parser.add_argument('--out',type=str,help='Output file prefix',required=True)
-parser.add_argument('--snippy-dir',type=str,help='Directory containing snippy output')
-parser.add_argument('--outgroup',type=str,help='Outgroup to use for rooting')
-parser.add_argument('--working-dir',type=str,help='Working directory',default="/tmp")
-parser.add_argument('--ref',type=str,help='Reference genome',default="/home/jody/refgenome/MTB-h37rv_asm19595v2-eg18.fa")
-parser.add_argument('--exclude-bed',required = True)
-parser.add_argument('--no-clean',action="store_false",help='Do not clean up working directory')
-parser.set_defaults(func=main)
+parser = argparse.ArgumentParser(description='TB-Forest pipeline',formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+subparsers = parser.add_subparsers(help="Task to perform")
+
+parser_sub = subparsers.add_parser('add', help='Run whole profiling pipeline', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser_sub.add_argument('--master-tree',type=str,help='Pickle file containing the master tree',required=True)
+parser_sub.add_argument('--new-sample',type=str,help='New sample to add to the tree',required=True)
+parser_sub.add_argument('--out',type=str,help='Output file prefix',required=True)
+parser_sub.add_argument('--snippy-dir',type=str,help='Directory containing snippy output')
+parser_sub.add_argument('--outgroup',type=str,help='Outgroup to use for rooting')
+parser_sub.add_argument('--working-dir',type=str,help='Working directory',default="/tmp")
+parser_sub.add_argument('--ref',type=str,help='Reference genome',default="/home/jody/refgenome/MTB-h37rv_asm19595v2-eg18.fa")
+parser_sub.add_argument('--exclude-bed',required = True)
+parser_sub.add_argument('--no-clean',action="store_false",help='Do not clean up working directory')
+parser_sub.set_defaults(func=main_add)
+
+parser_sub = subparsers.add_parser('cut', help='Run whole profiling pipeline', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser_sub.add_argument('--master-tree',type=str,help='Pickle file containing the master tree',required=True)
+parser_sub.add_argument('--sample',type=str,help='Pickle file containing the master tree',required=True)
+parser_sub.add_argument('--cutoff',type=int,help='New sample to add to the tree',required=True)
+parser_sub.set_defaults(func=main_cut)
+
 args = parser.parse_args()
-args.func(args)
+if hasattr(args, 'func'):
+    args.func(args)
+else:
+    parser.print_help(sys.stderr)
+
+
+
+
+
+
+# parser = argparse.ArgumentParser(description='NTM-Profiler pipeline',formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+# subparsers = parser.add_subparsers(help="Task to perform")
+
+
+
+
+# # Update database #
+# parser_sub = subparsers.add_parser('update_db', help='Update all databases', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+# parser_sub.add_argument('--branch','-b',default="main",help='Storage directory')
+
+# parser_sub.add_argument('--dir','-d',default=".",help='Storage directory')
+# parser_sub.set_defaults(func=main_cut)
+
+
+
+
+
+
+
+# args = parser.parse_args()
+# if hasattr(args, 'func'):
+#     args.func(args)
+# else:
+#     parser.print_help(sys.stderr)
