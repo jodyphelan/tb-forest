@@ -11,7 +11,7 @@ import argparse
 from tqdm import tqdm
 from collections import Counter, defaultdict
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 def nexus2ete3(filename):
     def parse_mutations(muts):
@@ -169,7 +169,7 @@ def local_phylo_reconstruct(samples,ref,snippy_dir,outgroup,exclude_bed,working_
     # pp.run_cmd(f"snippy-core --mask {exclude_bed} -r {ref} {snippy_dirs}")
     # pp.run_cmd(f"fasta_remove_seq.py --fasta core.full.aln --seqs Reference > core.noref.aln")
     # pp.run_cmd(f"mv core.noref.aln core.full.aln")
-    pp.run_cmd(f"snippy-cloud.py --mask {exclude_bed} -r {ref} {snippy_dirs} --force-nonmissing-samples {new_sample}")
+    pp.run_cmd(f"snippy-cloud.py --mask {exclude_bed} -r {ref} {snippy_dirs} ")
     pp.run_cmd(f"iqtree -s core.full.aln -m GTR+F+I -czb")
     pp.run_cmd(f"tree_root_on_outgroup.py  --tree core.full.aln.treefile --outfile core.full.aln.rooted.treefile --outgroup {outgroup}")
     pp.run_cmd(f"treetime ancestral --aln core.vcf --vcf-reference {ref} --tree core.full.aln.rooted.treefile  --outdir ancestral")
