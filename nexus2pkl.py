@@ -31,17 +31,17 @@ def czb(t,cut=0):
         
     return t
 
-
-def parse_mutations(muts):
-    results = set()
-    for m in muts:
-        anc = m[0]
-        mut = m[-1]
-        pos = int(m[1:-1])
-        results.add((pos,mut))
-    return results
-
 def nexus2ete3(filename):
+    def parse_mutations(muts):
+        results = set()
+        for m in muts:
+            if m=="": continue
+            anc = m[0]
+            mut = m[-1]
+            pos = int(m[1:-1])
+            results.add((pos,mut))
+        return results
+        
     tree = list(Phylo.parse(filename, "nexus"))[0]
     mutations = {}
     for c in tree.find_clades():
@@ -56,14 +56,12 @@ def nexus2ete3(filename):
 
     tmp = str(uuid4())
     Phylo.write(tree,tmp,"newick")
-    import ete3
     t = ete3.Tree(tmp,1)
     for n in t.traverse():
         n.add_features(mutations = mutations.get(n.name,None))
         n.dist = len(mutations.get(n.name,[]))
     os.remove(tmp)
     return t
-
 
 t = czb(nexus2ete3(sys.argv[1]),cut=1)
 pickle.dump(t,open(sys.argv[2]+".pkl","wb"))
