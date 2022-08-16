@@ -11,7 +11,7 @@ import argparse
 from tqdm import tqdm
 from collections import Counter, defaultdict
 
-__version__ = "0.0.4"
+__version__ = "0.0.5"
 
 def nexus2ete3(filename):
     def parse_mutations(muts):
@@ -329,51 +329,12 @@ def main_add(args):
     mixed_positions = load_mixed_positions(raw_vcf)
 
     path = get_paths(t,sample_mutations)
-    # def dont_go_further(node):
-    #     if node.mutations==None: 
-    #         return False
-    #     if len(node.mutations)==0:
-    #         return False
-    #     if compare_sample_to_branch(sample_mutations,node.mutations)<0.1:
-    #         return True
-    #     else:
-    #         return False
-
-    # results = []
-    # for n in tqdm(t.traverse(is_leaf_fn=dont_go_further)):
-    #     if n.is_root():
-    #         continue
-    #     if n.mutations==None:
-    #         continue
-    #     if len(n.mutations)==0:
-    #         continue
-        
-    #     results.append((n.name,compare_sample_to_branch(sample_mutations,n.mutations),len(n.get_ancestors())))
-
-    # print(results)
-    # filtered_results = [r for r in results if r[1]>0.5]
-    # print(filtered_results)
-
-    # nodeA = t & filtered_results[-1][0]
+    
     nodeA = t & path[-1][0]
     print(nodeA.mutations)
     if nodeA.is_leaf():
         nodeA = nodeA.get_ancestors()[0]
 
-    #### check for mixed infection
-    # for n in nodeA.traverse():
-    #     if n.is_leaf():
-    #         continue
-    #     # print(mixed_positions)
-    #     positions = set([x[0] for x in n.mutations])
-    #     # print(positions)
-    #     if len(positions.intersection(mixed_positions))/len(positions)>0.5:
-    #         pp.warninglog("Mixed infection detected")
-    #         pp.warninglog(n.name)
-    #         pp.warninglog(positions.intersection(mixed_positions))
-    #         pickle.dump(t,open(args.out+".pkl","wb"))
-    #         t.write(format=1,outfile=args.out+".newick")
-    #         quit()
 
     #### check for mixed infection
     if check_for_mix(mixed_positions,t):
@@ -384,18 +345,18 @@ def main_add(args):
         
     
     # nodeA = nodeA.get_ancestors()[0]
+    
+    nodeD = nodeA.get_ancestors()[0]
+    outclade = []
+    children_nodes = nodeA.children
+    children_node_reps = [set(n.get_leaf_names()[:2] + n.get_leaf_names()[-2:]) for n in children_nodes]
+    representative_children = flatten(children_node_reps)
+
     while True:
-        nodeD = nodeA.get_ancestors()[0]
         outclade_nodes = [n for n in nodeD.children if n.name!=nodeA.name]
-        outclade = flatten([n.get_leaf_names()[:3] for n in outclade_nodes])
+        outclade = outclade + flatten([n.get_leaf_names()[:3] for n in outclade_nodes])
         pp.debug("Outclade: %s" % str(outclade))
 
-
-
-        # print_marked_branch(nodeA.get_ancestors()[0],nodeA.name)
-        children_nodes = nodeA.children
-        children_node_reps = [set(n.get_leaf_names()[:2] + n.get_leaf_names()[-2:]) for n in children_nodes]
-        representative_children = flatten(children_node_reps)
         tmp_samples =  set(representative_children + outclade + [args.new_sample, args.outgroup])
         
 
@@ -417,9 +378,9 @@ def main_add(args):
             if check_if_clusters_with_one_leaf(x,args.new_sample):
                 break
             else:
-                print_marked_branch(nodeA.get_ancestors()[0],nodeA.name)
-                print(x)
-                nodeA = nodeA.get_ancestors()[0]
+                # print_marked_branch(nodeA.get_ancestors()[0],nodeA.name)
+                # print(x)
+                nodeD = nodeD.get_ancestors()[0]
                 pp.warninglog("Not monophyletic, going back to a higher node")
         else:
             break
