@@ -55,10 +55,10 @@ def walk_paths(n, sample_mutations, paths=None, current_path=None,skips=0):
  
     if n.mutations:
         overlap = compare_sample_to_branch(sample_mutations,n.mutations)
-        current_path.append((n.name,overlap))
+        current_path.append((n.name,overlap,len(n.mutations)))
     else:
-        overlap = None
-        current_path.append((n.name,overlap))
+        overlap = 0
+        current_path.append((n.name,overlap,0))
     
     
         
@@ -90,11 +90,12 @@ def walk_paths(n, sample_mutations, paths=None, current_path=None,skips=0):
 def get_paths(n,sample_mutations):
     paths = walk_paths(n,sample_mutations)
     for p in paths:
-        while p[-1][1]==None or p[-1][1]==0:
+        while p[-1][1]==None or p[-1][1]<0.5:
             p.pop()
             if len(p)==0:
                 break
-    return sorted(paths,key=lambda x:len(x))[-1]
+    return sorted(paths,key=lambda x:sum([n[1]*n[2] for n in x]))[-1]
+
 
 
 def load_vcf_mutations(vcf,ref):
@@ -303,7 +304,8 @@ def check_for_mix(mixed_positions,t):
             branch_positions = set([x[0] for x in n.mutations if n.mutations])
             f = len(branch_positions.intersection(mixed_positions))/len(branch_positions)
             if f>0.5:
-                high_mixed_branches.append((n.name,f))
+                high_mixed_branches.append((n.name,f,f*len(branch_positions)))
+    pp.debug(high_mixed_branches)
     if len(high_mixed_branches)>0:
         return True
     else:
@@ -347,13 +349,14 @@ def main_add(args):
     # nodeA = nodeA.get_ancestors()[0]
     
     nodeD = nodeA.get_ancestors()[0]
+    nodeO = nodeD
     outclade = []
     children_nodes = nodeA.children
     children_node_reps = [set(n.get_leaf_names()[:2] + n.get_leaf_names()[-2:]) for n in children_nodes]
     representative_children = flatten(children_node_reps)
 
     while True:
-        outclade_nodes = [n for n in nodeD.children if n.name!=nodeA.name]
+        outclade_nodes = [n for n in nodeO.children if n.name!=nodeA.name]
         outclade = outclade + flatten([n.get_leaf_names()[:3] for n in outclade_nodes])
         pp.debug("Outclade: %s" % str(outclade))
 
@@ -374,19 +377,21 @@ def main_add(args):
             # id="6ab5bd82-7d8c-4c11-9a3e-c52655d46801"
         )
         x = czb(x,cut=0)
+        print("*"*40)
+        print(x.get_ascii(attributes=["name","dist"],show_internal=True))
+        print("*"*40)
         if not is_monophyletic(x,representative_children + [args.new_sample]):
             if check_if_clusters_with_one_leaf(x,args.new_sample):
                 break
             else:
                 # print_marked_branch(nodeA.get_ancestors()[0],nodeA.name)
                 # print(x)
-                nodeD = nodeD.get_ancestors()[0]
+                nodeO = nodeO.get_ancestors()[0]
                 pp.warninglog("Not monophyletic, going back to a higher node")
         else:
+            pp.successlog("Is monophyletic, continuing...")
             break
-    print("*"*40)
-    print(x.get_ascii(attributes=["name","dist"],show_internal=True))
-    print("*"*40)
+
     
     rename_internal_nodes(x)
 

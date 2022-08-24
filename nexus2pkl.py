@@ -15,6 +15,7 @@ from tqdm import tqdm
 def czb(t,cut=0):
     sys.stderr.write("Collapsing zero length branches\n")
     change_made = True
+    leaves = set(t.get_leaf_names())
     while change_made:
         change_made = False
         for n in t.traverse():
@@ -24,7 +25,7 @@ def czb(t,cut=0):
                 p = n.get_ancestors()[0]
                 for c in list(n.children):
                     p.add_child(c.detach())
-                if n.is_leaf() and "DRR" not in n.name and "SRR" not in n.name and "ERR" not in n.name:
+                if n.is_leaf() and n.name not in leaves:
                     n.detach()
                     change_made = True
                     break
